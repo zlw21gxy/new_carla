@@ -132,6 +132,9 @@ class CarlaEnv(gym.Env):
         self.collision_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
         self.actor_list.append(self.collision_sensor)
 
+        # TODO add lane detector
+
+
     def reset(self):
         self.restart()
         weak_self = weakref.ref(self)
@@ -162,18 +165,32 @@ class CarlaEnv(gym.Env):
             return
         impulse = event.normal_impulse
         intensity = math.sqrt(impulse.x ** 2 + impulse.y ** 2 + impulse.z ** 2)
-        self._history_collision.append((event.frame_number, intensity))
-        if len(self._history_collision) > 40:
+        self._history_collision.append(intensity)
+        if len(self._history_collision) > 16:
+            self._history_collision.pop(0)
+
+    @staticmethod
+    def _parse_invasion(weak_self, event):
+        self = weak_self()
+        if not self:
+            return
+        text = ['%r' % str(x).split()[-1] for x in set(event.crossed_lane_markings)]
+        # S for Solid B for Broken
+        self._history_invasion.append(text[0][1])
+        if len(self._history_invasion) > 16:
             self._history_collision.pop(0)
 
     def step(self, action):
 
-        def compute_reward(info):
+        def compute_reward(info, prev_info):
             reward = 0.0
             reward += np.clip(info["speed"], 0, 30)/6
             reward -= 100 * int(len(self._history_collision) > 0)
-
-
+            new_invasion = list(set(info["lane_invasion"]) - set(prev_info["lane_invasion"]))
+            if 'S' in new_invasion:     # go across solid lane
+                reward -= 20
+            elif 'B' in new_invasion:   # go across broken lane
+                reward -= 5
             return reward
 
         done = False
@@ -192,7 +209,7 @@ class CarlaEnv(gym.Env):
         v = self.vehicle.get_velocity()
         c = self.vehicle.get_vehicle_control()
         acceleration = self.vehicle.get_acceleration()
-
+        # TODO:add the state of traffic light and speed limit
         info = {"speed": math.sqrt(v.x**2 + v.y**2 + v.z**2),  # m/s
                 "acceleration": math.sqrt(acceleration.x**2 + acceleration.y**2 + acceleration.z**2),
                 "location_x": t.location.x,
@@ -200,15 +217,14 @@ class CarlaEnv(gym.Env):
                 "Throttle": c.throttle,
                 "Steer": c.steer,
                 "Brake": c.brake,
-                "command": self.planner()}
-
+                "command": self.planner(),
+                "lane_invasion": self._history_invasion[-1]}
+        if len(self._history_info) == 0:
+            self._history_info.append(info)
+        reward = compute_reward(info, self._history_info[-1])
         self._history_info.append(info)
-
         if len(self._history_info) > 16:
             self._history_info.pop(0)
-
-        reward = compute_reward(info)
-
         # early stop
         if info["acceleration"] > 20:
             done = True

@@ -84,50 +84,31 @@ def main():
         actor_list.append(camera)
         print('created %s' % camera.type_id)
 
-        # Now we register the function that will be called each time the sensor
-        # receives an image. In this example we are saving the image to disk
-        # converting the pixels to gray-scale.
         cc = carla.ColorConverter.LogarithmicDepth
-       # camera.listen(lambda image: image.save_to_disk('carla_out/%06d.png' % image.frame_number, cc))
-        camera.listen(lambda image: _parse_image(image, cc))
-        # Oh wait, I don't like the location we gave to the vehicle, I'm going
-        # to move it a bit forward.
-        location = vehicle.get_location()
-        location.x += 40
-        vehicle.set_location(location)
-        print('moved vehicle to %s' % location)
+        # add lane invasion sensors
+        bp = world.get_blueprint_library().find('sensor.other.lane_detector')
+        invasion_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=vehicle)
+        invasion_sensor.listen(lambda event: _parse_invasion(event))
+        actor_list.append(invasion_sensor)
+        # camera.listen(lambda image: _parse_image(image, cc))
 
-        # But the city now is probably quite empty, let's add a few more
-        # vehicles.
-        transform.location += carla.Location(x=40, y=-3.2)
-        transform.rotation.yaw = -180.0
-        for x in range(0, 10):
-            transform.location.x += 8.0
 
-            bp = random.choice(blueprint_library.filter('vehicle'))
 
-            # This time we are using try_spawn_actor. If the spot is already
-            # occupied by another object, the function will return None.
-            npc = world.try_spawn_actor(bp, transform)
-            if npc is not None:
-                actor_list.append(npc)
-                npc.set_autopilot()
-                print('created %s' % npc.type_id)
         map = world.get_map()
         waypoint = map.get_waypoint(vehicle.get_location())
         waypoint = random.choice(waypoint.next(12.0))
         print(waypoint.transform)
 
 
-        time.sleep(5)
+        time.sleep(2)
 
     finally:
 
-        print('destroying actors')
+        # print('destroying actors')
         for actor in actor_list:
-            print(actor)
+            # print(actor)
             actor.destroy()
-        print('done.')
+        # print('done.')
 
 
 def _parse_image(image, cc):
@@ -139,6 +120,11 @@ def _parse_image(image, cc):
 
         # surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
         # print(array.shape)
+        print("vnao;inrv;oanerovnoevnoae;vno;vn")
+#
+def _parse_invasion(event):
+    text = ['%r' % str(x).split()[-1] for x in set(event.crossed_lane_markings)]
+
 
 if __name__ == '__main__':
     main()
