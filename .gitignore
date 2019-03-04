@@ -1,2 +1,4 @@
 myenv/
 .idea/
+__pycache__/
+_out/

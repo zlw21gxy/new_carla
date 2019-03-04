@@ -36,7 +36,7 @@ def main():
         # to the simulator. Here we'll assume the simulator is accepting
         # requests in the localhost at port 2000.
 
-        port = 2000
+        port = 2002
         client = carla.Client('localhost', port)
         client.set_timeout(2.0)
 
@@ -55,8 +55,8 @@ def main():
         # A blueprint contains the list of attributes that define a vehicle
         # instance, we can read them and modify some of them. For instance,
         # let's randomize its color.
-        color = random.choice(bp.get_attribute('color').recommended_values)
-        bp.set_attribute('color', color)
+#         color = random.choice(bp.get_attribute('color').recommended_values)
+  #       bp.set_attribute('color', color)
 
         # Now we need to give an initial transform to the vehicle. We choose a
         # random transform from the list of recommended spawn points of the map.
@@ -120,6 +120,7 @@ def main():
 
         print('destroying actors')
         for actor in actor_list:
+            print(actor)
             actor.destroy()
         print('done.')
 
@@ -132,7 +133,7 @@ def _parse_image(image, cc):
         array = array[:, :, -2:-5:-1]
 
         # surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
-        print(array.shape)
+        # print(array.shape)
 
 if __name__ == '__main__':
     main()
