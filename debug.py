@@ -26,6 +26,7 @@ import time
 import subprocess
 from carla import ColorConverter as cc
 import math
+import matplotlib.pyplot as plt
 import numpy as np
 import gym
 from gym.spaces import Box, Discrete, Tuple
@@ -80,6 +81,7 @@ COMMAND_ORDINAL = {
     "SURPASS": 5
 }
 
+
 class CarlaEnv(gym.Env):
     def __init__(self, config=ENV_CONFIG):
         self.config = config
@@ -125,12 +127,13 @@ class CarlaEnv(gym.Env):
         self.vehicle = None
         self.collision_sensor = None
         self.camera_rgb = None
-        # states
+        # states and data
         self._history_info = []       # info history
         self._history_collision = []  # collision history
         self._history_invasion = []   # invasion history
         self._image_depth = []        # save a list of depth image
         self._image_rgb = []          # save a list of rgb image
+        self.image = []
         # server
         self.server_port = 2000
         self.client = carla.Client("localhost", self.server_port)
@@ -138,10 +141,6 @@ class CarlaEnv(gym.Env):
         self.world = self.client.get_world()
 
     def restart(self):
-        pass
-
-    def reset(self):
-
         world = self.world
         bp_library = world.get_blueprint_library()
 
@@ -156,19 +155,20 @@ class CarlaEnv(gym.Env):
         camera_transform = carla.Transform(carla.Location(x=0, z=2.4))
         bp_rgb = bp_library.find('sensor.camera.rgb')
         self.camera_rgb = world.spawn_actor(bp_rgb, camera_transform, attach_to=self.vehicle)
-        weak_self = weakref.ref(self)
-        self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image, carla.ColorConverter.Raw))
         self.actor_list.append(self.camera_rgb)
 
         # add collision sensors
-        bp = world.get_blueprint_library().find('sensor.other.collision')
+        bp = bp_library.find('sensor.other.collision')
         self.collision_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
-        weak_self = weakref.ref(self)
-        self.collision_sensor.listen(lambda event: self._parse_collision(weak_self, event))
         self.actor_list.append(self.collision_sensor)
 
-        time.sleep(0.1)
+    def reset(self):
+        self.restart()
+        weak_self = weakref.ref(self)
 
+        self.collision_sensor.listen(lambda event: self._parse_collision(weak_self, event))
+        self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image, carla.ColorConverter.Raw))
+        time.sleep(0.09)
         return self._image_rgb[-1]
 
     @staticmethod
@@ -177,10 +177,13 @@ class CarlaEnv(gym.Env):
         if not self:
             return
         image.convert(cc)
+        # image.save_to_disk('_out/%08d' % image.frame_number)
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
         array = array[:, :, -2:-5:-1]
         self._image_rgb.append(array)
+        # time.sleep(1)
+        self.image.append(image)
 
     @staticmethod
     def _parse_collision(weak_self, event):
@@ -190,7 +193,7 @@ class CarlaEnv(gym.Env):
         impulse = event.normal_impulse
         intensity = math.sqrt(impulse.x ** 2 + impulse.y ** 2 + impulse.z ** 2)
         self._history_collision.append((event.frame_number, intensity))
-        if len(self._history) > 40:
+        if len(self._history_collision) > 40:
             self._history_collision.pop(0)
 
     def step(self, action):
@@ -209,7 +212,9 @@ class CarlaEnv(gym.Env):
         brake = float(np.abs(np.clip(action[0], -1, 0)))
         steer = float(np.clip(action[1], -1, 1))
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, brake=brake, steer=steer))
-        # self.vehicle.apply_control(carla.VehicleControl(throttle=1, brake=0, steer=0))
+        # get image
+        time.sleep(0.09)
+
         # get other measurement
         t = self.vehicle.get_transform()
         v = self.vehicle.get_velocity()
@@ -235,21 +240,25 @@ class CarlaEnv(gym.Env):
 
         return self._image_rgb[-1], reward, done, self._history_info[-1]
 
-
-
-
+    def render(self):
+        import pygame
+        display = pygame.display.set_mode(
+            (800, 600),
+            pygame.HWSURFACE | pygame.DOUBLEBUF)
+        surface = pygame.surfarray.make_surface(env._image_rgb[-1].swapaxes(0, 1))
+        display.blit(surface, (0, 0))
+        time.sleep(0.01)
+        pygame.display.flip()
 
 if __name__ == '__main__':
 
     env = CarlaEnv()
     obs = env.reset()
     print(obs.shape)
-    # obs, reward, done, info = env.step(3)
-    # print(reward)
-    for i in range(1000):
+    for i in range(30):
+        env.render()
         obs, reward, done, info = env.step(3)
-        if i % 10 == 0:
-            print(reward)
+        print(len(env._image_rgb))
 
     for actor in env.actor_list:
         actor.destroy()
