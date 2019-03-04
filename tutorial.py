@@ -36,7 +36,7 @@ def main():
         # to the simulator. Here we'll assume the simulator is accepting
         # requests in the localhost at port 2000.
 
-        port = 2002
+        port = 2000
         client = carla.Client('localhost', port)
         client.set_timeout(2.0)
 
@@ -113,6 +113,11 @@ def main():
                 actor_list.append(npc)
                 npc.set_autopilot()
                 print('created %s' % npc.type_id)
+        map = world.get_map()
+        waypoint = map.get_waypoint(vehicle.get_location())
+        waypoint = random.choice(waypoint.next(12.0))
+        print(waypoint.transform)
+
 
         time.sleep(5)
 

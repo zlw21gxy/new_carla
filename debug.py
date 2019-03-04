@@ -1,11 +1,5 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2017 Computer Vision Center (CVC) at the Universitat Autonoma de
-# Barcelona (UAB).
-#
-# This work is licensed under the terms of the MIT license.
-# For a copy, see <https://opensource.org/licenses/MIT>.
-
 import glob
 import os
 import sys
@@ -32,87 +26,62 @@ import gym
 from gym.spaces import Box, Discrete, Tuple
 # Default environment configuration
 ENV_CONFIG = {
-    "log_images": True,
+    "framestack": 1,
     "enable_planner": True,
-    "framestack": 2,  # note: only [1, 2] currently supported
-    "convert_images_to_video": True,
     "early_terminate_on_collision": True,
-    "verbose": True,
     "reward_function": "custom",
     "render_x_res": 800,
     "render_y_res": 600,
     "x_res": 800,
     "y_res": 800,
-    "server_map": "/Game/Maps/Town02",
-    "use_depth_camera": False,
     "discrete_actions": True,
-    "squash_action_logits": False,
 }
-
-DISCRETE_ACTIONS = {
-    # coast
-    0: [0.0, 0.0],
-    # turn left
-    1: [0.0, -0.5],
-    # turn right
-    2: [0.0, 0.5],
-    # forward
-    3: [1.0, 0.0],
-    # brake
-    4: [-0.5, 0.0],
-    # forward left
-    5: [1.0, -0.5],
-    # forward right
-    6: [1.0, 0.5],
-    # brake left
-    7: [-0.5, -0.5],
-    # brake right
-    8: [-0.5, 0.5],
-}
-
-# Mapping from string repr to one-hot encoding index to feed to the model
-# Some command we want give to agent
-COMMAND_ORDINAL = {
-    "REACH_GOAL": 0,
-    "STOP": 1,
-    "LANE_KEEP": 2,
-    "TURN_RIGHT": 3,
-    "TURN_LEFT": 4,
-    "SURPASS": 5
-}
-
 
 class CarlaEnv(gym.Env):
     def __init__(self, config=ENV_CONFIG):
         self.config = config
-        self.city = self.config["server_map"].split("/")[-1]
+        self.command = {
+            "stop": 1,
+            "lane_keep": 2,
+            "turn_right": 3,
+            "turn_left": 4,
+        }
+        self.DISCRETE_ACTIONS = {
+            # coast
+            0: [0.0, 0.0],
+            # turn left
+            1: [0.0, -0.5],
+            # turn right
+            2: [0.0, 0.5],
+            # forward
+            3: [1.0, 0.0],
+            # brake
+            4: [-0.5, 0.0],
+            # forward left
+            5: [1.0, -0.5],
+            # forward right
+            6: [1.0, 0.5],
+            # brake left
+            7: [-0.5, -0.5],
+            # brake right
+            8: [-0.5, 0.5],
+        }
+
         if self.config["enable_planner"]:
             pass
 
         if config["discrete_actions"]:
-            self.action_space = Discrete(len(DISCRETE_ACTIONS))
+            self.action_space = Discrete(len(self.command))
         else:
             self.action_space = Box(-1.0, 1.0, shape=(2, ), dtype=np.float32)
-        if config["use_depth_camera"]:
-            image_space = Box(
-                -1.0,
-                1.0,
-                shape=(config["y_res"], config["x_res"],
-                       1 * config["framestack"]),
-                dtype=np.float32)
-        else:
-            image_space = Box(
-                0,
-                255,
-                shape=(config["y_res"], config["x_res"],
-                       3 * config["framestack"]),
-                dtype=np.uint8)
-        self.observation_space = Tuple(          # forward_speed, dist to goal
-            [
-                image_space,
-                Discrete(len(COMMAND_ORDINAL)),  # next_command
-                Box(-128.0, 128.0, shape=(2, ), dtype=np.float32)
-            ])
+
+        image_space = Box(
+            0,
+            255,
+            shape=(config["y_res"], config["x_res"],
+                   3 * config["framestack"]),
+            dtype=np.uint8)
+        self.observation_space = image_space
         # environment config
         self._spec = lambda: None
         self._spec.id = "Carla_v0"
@@ -139,6 +108,7 @@ class CarlaEnv(gym.Env):
         self.client = carla.Client("localhost", self.server_port)
         self.client.set_timeout(2.0)
         self.world = self.client.get_world()
+        self.map = self.world.get_map()
 
     def restart(self):
         world = self.world
@@ -200,13 +170,15 @@ class CarlaEnv(gym.Env):
 
         def compute_reward(info):
             reward = 0.0
-            reward += info["speed"]
+            reward += np.clip(info["speed"], 0, 30)/6
+            reward -= 100 * int(len(self._history_collision) > 0)
+
 
             return reward
 
         done = False
         if self.config["discrete_actions"]:
-            action = DISCRETE_ACTIONS[int(action)]
+            action = self.DISCRETE_ACTIONS[int(action)]
 
         throttle = float(np.clip(action[0], 0, 1))
         brake = float(np.abs(np.clip(action[0], -1, 0)))
@@ -227,7 +199,8 @@ class CarlaEnv(gym.Env):
                 "location_y": t.location.y,
                 "Throttle": c.throttle,
                 "Steer": c.steer,
-                "Brake": c.brake}
+                "Brake": c.brake,
+                "command": self.planner()}
 
         self._history_info.append(info)
 
@@ -235,7 +208,13 @@ class CarlaEnv(gym.Env):
             self._history_info.pop(0)
 
         reward = compute_reward(info)
+
+        # early stop
         if info["acceleration"] > 20:
+            done = True
+        elif len(self._history_collision) > 0:
+            done = True
+        elif reward < -100:
             done = True
 
         return self._image_rgb[-1], reward, done, self._history_info[-1]
@@ -250,15 +229,30 @@ class CarlaEnv(gym.Env):
         time.sleep(0.01)
         pygame.display.flip()
 
-if __name__ == '__main__':
+    def planner(self):
+        waypoint = self.map.get_waypoint(self.vehicle.get_location())
+        waypoint = random.choice(waypoint.next(12.0))
+        yaw = waypoint.transform.rotation.yaw
+        if yaw > -90 or yaw < 60:
+            command = "turn_right"
+        elif yaw > 60 and yaw < 120:
+            command = "lane_keep"
+        elif yaw > 120 or yaw < -90:
+            command = "turn_left"
+        return self.command[command]
 
+
+if __name__ == '__main__':
     env = CarlaEnv()
     obs = env.reset()
     print(obs.shape)
-    for i in range(30):
-        env.render()
-        obs, reward, done, info = env.step(3)
-        print(len(env._image_rgb))
+    done = False
+    for i in range(100):
+        if not done:
+            env.render()
+            obs, reward, done, info = env.step(3)
+            # print(len(env._image_rgb), obs.shape)
+            print(reward)
 
     for actor in env.actor_list:
         actor.destroy()
