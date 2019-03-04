@@ -165,8 +165,8 @@ class CarlaEnv(gym.Env):
             return
         impulse = event.normal_impulse
         intensity = math.sqrt(impulse.x ** 2 + impulse.y ** 2 + impulse.z ** 2)
-        self._history_collision.append(intensity)
-        if len(self._history_collision) > 16:
+        self._history_collision.append((event.frame_number, intensity))
+        if len(self._history_collision) > 1600:
             self._history_collision.pop(0)
 
     @staticmethod
@@ -210,6 +210,10 @@ class CarlaEnv(gym.Env):
         c = self.vehicle.get_vehicle_control()
         acceleration = self.vehicle.get_acceleration()
         # TODO:add the state of traffic light and speed limit
+        if len(self._history_invasion) > 0:
+            invasion = self._history_invasion[-1]
+        else:
+            invasion = []
         info = {"speed": math.sqrt(v.x**2 + v.y**2 + v.z**2),  # m/s
                 "acceleration": math.sqrt(acceleration.x**2 + acceleration.y**2 + acceleration.z**2),
                 "location_x": t.location.x,
@@ -218,7 +222,7 @@ class CarlaEnv(gym.Env):
                 "Steer": c.steer,
                 "Brake": c.brake,
                 "command": self.planner(),
-                "lane_invasion": self._history_invasion[-1]}
+                "lane_invasion": invasion}
         if len(self._history_info) == 0:
             self._history_info.append(info)
         reward = compute_reward(info, self._history_info[-1])
@@ -228,10 +232,10 @@ class CarlaEnv(gym.Env):
         # early stop
         if info["acceleration"] > 20:
             done = True
-        elif len(self._history_collision) > 0:
+        elif len(self._history_collision) > 3: #or np.sum([x[1]>20 for x in self._history_collision]) > 1 :
             done = True
-        elif reward < -100:
-            done = True
+        # elif reward < -100:
+        #     done = True
 
         return self._image_rgb[-1], reward, done, self._history_info[-1]
 
@@ -263,7 +267,7 @@ if __name__ == '__main__':
     obs = env.reset()
     print(obs.shape)
     done = False
-    for i in range(100):
+    for i in range(320):
         if not done:
             env.render()
             obs, reward, done, info = env.step(3)
