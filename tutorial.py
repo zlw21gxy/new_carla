@@ -10,11 +10,13 @@ import glob
 import os
 import sys
 
+import glob
+import os
+import sys
+import re
+import weakref
 try:
-    sys.path.append(glob.glob('**/*%d.%d-%s.egg' % (
-        sys.version_info.major,
-        sys.version_info.minor,
-        'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
+    sys.path.append('/home/gu/Documents/carla94/PythonAPI/carla-0.9.4-py3.5-linux-x86_64.egg')
 except IndexError:
     pass
 
@@ -90,7 +92,7 @@ def main():
         invasion_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=vehicle)
         invasion_sensor.listen(lambda event: _parse_invasion(event))
         actor_list.append(invasion_sensor)
-        # camera.listen(lambda image: _parse_image(image, cc))
+        camera.listen(lambda image: _parse_image(image, cc))
 
 
 
@@ -112,18 +114,20 @@ def main():
 
 
 def _parse_image(image, cc):
-        image.convert(cc)
-        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-        array = np.reshape(array, (image.height, image.width, 4))
+    image.convert(cc)
+    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+    array = np.reshape(array, (image.height, image.width, 4))
 
-        array = array[:, :, -2:-5:-1]
+    array = array[:, :, -2:-5:-1]
 
-        # surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
-        # print(array.shape)
-        print("vnao;inrv;oanerovnoevnoae;vno;vn")
+    # surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    # print(array.shape)
+    print("vnao;inrv;oanerovnoevnoae;vno;vn")
 #
 def _parse_invasion(event):
-    text = ['%r' % str(x).split()[-1] for x in set(event.crossed_lane_markings)]
+    # text = ['%r' % str(x).split()[-1] for x in set(event.crossed_lane_markings)]
+    # event
+    print(str(event))
 
 
 if __name__ == '__main__':

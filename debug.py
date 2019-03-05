@@ -93,6 +93,7 @@ class CarlaEnv(gym.Env):
         self.vehicle = None
         self.collision_sensor = None
         self.camera_rgb = None
+        self.invasion_sensor = None
         # states and data
         self._history_info = []       # info history
         self._history_collision = []  # collision history
@@ -129,14 +130,20 @@ class CarlaEnv(gym.Env):
         self.collision_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
         self.actor_list.append(self.collision_sensor)
 
-        # TODO add lane detector
+        # add invasion sensors
+        bp = bp_library.find('sensor.other.lane_detector')
+        self.invasion_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
+        self.actor_list.append(self.invasion_sensor)
 
 
     def reset(self):
         self.restart()
         weak_self = weakref.ref(self)
+        # set invasion sensor
         self.invasion_sensor.listen(lambda event: self._parse_invasion(weak_self, event))
+        # set collision sensor
         self.collision_sensor.listen(lambda event: self._parse_collision(weak_self, event))
+        # set rgb camera sensor
         self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image, carla.ColorConverter.Raw))
         time.sleep(0.1)
         return self._image_rgb[-1]
@@ -154,6 +161,7 @@ class CarlaEnv(gym.Env):
         self._image_rgb.append(array)
         # time.sleep(1)
         self.image.append(image)
+        # print(1)
 
     @staticmethod
     def _parse_collision(weak_self, event):
@@ -171,7 +179,7 @@ class CarlaEnv(gym.Env):
         self = weak_self()
         if not self:
             return
-        print(str(event.crossed_lane_markings))
+        # print(str(event.crossed_lane_markings)) [carla.libcarla.LaneMarking.Solid]
         text = ['%r' % str(x).split()[-1] for x in set(event.crossed_lane_markings)]
         # S for Solid B for Broken
         self._history_invasion.append(text[0][1])
@@ -202,10 +210,6 @@ class CarlaEnv(gym.Env):
         # get image
         time.sleep(0.1)
 
-        # get other measurement
-        # t = self.vehicle.get_transform()
-        # v = self.vehicle.get_velocity()
-        # c = self.vehicle.get_vehicle_control()
         t = self.vehicle.get_transform()
         v = self.vehicle.get_velocity()
         c = self.vehicle.get_control()
@@ -224,7 +228,10 @@ class CarlaEnv(gym.Env):
                 "Brake": c.brake,
                 "command": self.planner(),
                 "lane_invasion": invasion,
-                "traffic_light": str(self.vehicle.get_traffic_light()),}
+                "traffic_light": str(self.vehicle.get_traffic_light_state()),    # Red Yellow Green Off Unknown
+                "is_at_traffic_light": self.vehicle.is_at_traffic_light(),
+                "speed_limit": self.vehicle.get_speed_limit()}       # True False
+
         if len(self._history_info) == 0:
             self._history_info.append(info)
         reward = compute_reward(info, self._history_info[-1])
@@ -232,7 +239,7 @@ class CarlaEnv(gym.Env):
         if len(self._history_info) > 16:
             self._history_info.pop(0)
         # early stop
-        if len(self._history_collision) > 0: #or np.sum([x[1]>20 for x in self._history_collision]) > 1 :
+        if len(self._history_collision) > 0:
             print("collisin length", len(self._history_collision))
             done = True
         elif reward < -100:
