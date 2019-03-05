@@ -6,10 +6,7 @@ import sys
 import re
 import weakref
 try:
-    sys.path.append(glob.glob('**/*%d.%d-%s.egg' % (
-        sys.version_info.major,
-        sys.version_info.minor,
-        'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
+    sys.path.append('/home/gu/Documents/carla94/PythonAPI/carla-0.9.4-py3.5-linux-x86_64.egg')
 except IndexError:
     pass
 
@@ -138,10 +135,10 @@ class CarlaEnv(gym.Env):
     def reset(self):
         self.restart()
         weak_self = weakref.ref(self)
-
+        self.invasion_sensor.listen(lambda event: self._parse_invasion(weak_self, event))
         self.collision_sensor.listen(lambda event: self._parse_collision(weak_self, event))
         self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image, carla.ColorConverter.Raw))
-        time.sleep(0.09)
+        time.sleep(0.1)
         return self._image_rgb[-1]
 
     @staticmethod
@@ -174,6 +171,7 @@ class CarlaEnv(gym.Env):
         self = weak_self()
         if not self:
             return
+        print(str(event.crossed_lane_markings))
         text = ['%r' % str(x).split()[-1] for x in set(event.crossed_lane_markings)]
         # S for Solid B for Broken
         self._history_invasion.append(text[0][1])
@@ -202,12 +200,15 @@ class CarlaEnv(gym.Env):
         steer = float(np.clip(action[1], -1, 1))
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, brake=brake, steer=steer))
         # get image
-        time.sleep(0.09)
+        time.sleep(0.1)
 
         # get other measurement
+        # t = self.vehicle.get_transform()
+        # v = self.vehicle.get_velocity()
+        # c = self.vehicle.get_vehicle_control()
         t = self.vehicle.get_transform()
         v = self.vehicle.get_velocity()
-        c = self.vehicle.get_vehicle_control()
+        c = self.vehicle.get_control()
         acceleration = self.vehicle.get_acceleration()
         # TODO:add the state of traffic light and speed limit
         if len(self._history_invasion) > 0:
@@ -222,7 +223,8 @@ class CarlaEnv(gym.Env):
                 "Steer": c.steer,
                 "Brake": c.brake,
                 "command": self.planner(),
-                "lane_invasion": invasion}
+                "lane_invasion": invasion,
+                "traffic_light": str(self.vehicle.get_traffic_light()),}
         if len(self._history_info) == 0:
             self._history_info.append(info)
         reward = compute_reward(info, self._history_info[-1])
@@ -230,12 +232,11 @@ class CarlaEnv(gym.Env):
         if len(self._history_info) > 16:
             self._history_info.pop(0)
         # early stop
-        if info["acceleration"] > 20:
+        if len(self._history_collision) > 0: #or np.sum([x[1]>20 for x in self._history_collision]) > 1 :
+            print("collisin length", len(self._history_collision))
             done = True
-        elif len(self._history_collision) > 3: #or np.sum([x[1]>20 for x in self._history_collision]) > 1 :
+        elif reward < -100:
             done = True
-        # elif reward < -100:
-        #     done = True
 
         return self._image_rgb[-1], reward, done, self._history_info[-1]
 
@@ -267,12 +268,11 @@ if __name__ == '__main__':
     obs = env.reset()
     print(obs.shape)
     done = False
-    for i in range(320):
-        if not done:
-            env.render()
-            obs, reward, done, info = env.step(3)
-            # print(len(env._image_rgb), obs.shape)
-            print(reward)
+    while not done:
+        env.render()
+        obs, reward, done, info = env.step(3)
+        # print(len(env._image_rgb), obs.shape)
+        print(reward)
 
     for actor in env.actor_list:
         actor.destroy()
