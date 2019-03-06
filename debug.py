@@ -103,13 +103,29 @@ class CarlaEnv(gym.Env):
         self.image = []
         # server
         self.server_port = 2000
-        self.client = carla.Client("localhost", self.server_port)
-        self.client.set_timeout(2.0)
+        try:
+            self.client = carla.Client("localhost", self.server_port)
+            self.client.set_timeout(2.0)
+        except Exception as e:
+            print("fail to connect simulator", e)
+            self.client = carla.Client("localhost", self.server_port)
+            self.client.set_timeout(10.0)
         self.world = self.client.get_world()
         self.map = self.world.get_map()
 
     def restart(self):
         world = self.world
+        # destroy actors in the world before we start new episode
+        for a in self.world.get_actors().filter('vehicle.*'):
+            try:
+                a.destroy()
+            except:
+                pass
+        for a in self.world.get_actors().filter('sensor.*'):
+            try:
+                a.destroy()
+            except:
+                pass
         bp_library = world.get_blueprint_library()
 
         # setup vehicle
@@ -145,7 +161,7 @@ class CarlaEnv(gym.Env):
         self.collision_sensor.listen(lambda event: self._parse_collision(weak_self, event))
         # set rgb camera sensor
         self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image, carla.ColorConverter.Raw))
-        time.sleep(0.1)
+        time.sleep(0.2)
         return self._image_rgb[-1]
 
     @staticmethod
@@ -161,7 +177,8 @@ class CarlaEnv(gym.Env):
         self._image_rgb.append(array)
         # time.sleep(1)
         self.image.append(image)
-        # print(1)
+        if len(self.image) > 16:
+            self.image.pop(0)
 
     @staticmethod
     def _parse_collision(weak_self, event):
@@ -171,7 +188,7 @@ class CarlaEnv(gym.Env):
         impulse = event.normal_impulse
         intensity = math.sqrt(impulse.x ** 2 + impulse.y ** 2 + impulse.z ** 2)
         self._history_collision.append((event.frame_number, intensity))
-        if len(self._history_collision) > 1600:
+        if len(self._history_collision) > 16:
             self._history_collision.pop(0)
 
     @staticmethod
@@ -272,6 +289,7 @@ class CarlaEnv(gym.Env):
 
 if __name__ == '__main__':
     env = CarlaEnv()
+
     obs = env.reset()
     print(obs.shape)
     done = False
@@ -281,5 +299,7 @@ if __name__ == '__main__':
         # print(len(env._image_rgb), obs.shape)
         print(reward)
 
-    for actor in env.actor_list:
-        actor.destroy()
+    # for actor in env.actor_list:
+    #     print(actor.id)
+    #     actor.destroy()
+    #     print("test", actor.is_alive)
