@@ -88,6 +88,7 @@ class CarlaEnv(gym.Env):
         self.episode_id = None
         self.measurements_file = None
         self.weather = None
+        self.feature_map = None
         # actors
         self.actor_list = []          # save actor list for destroying them after finish
         self.vehicle = None
@@ -147,21 +148,27 @@ class CarlaEnv(gym.Env):
         self.actor_list.append(self.vehicle)
 
         # setup rgb camera
-        camera_transform = carla.Transform(carla.Location(x=0.7, y=0, z=2))
+        camera_transform = carla.Transform(carla.Location(x=1, y=0, z=2))
         camera_rgb = bp_library.find('sensor.camera.rgb')
         camera_rgb.set_attribute('fov', '120')
+        camera_rgb.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
+        camera_rgb.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
         self.camera_rgb = world.spawn_actor(camera_rgb, camera_transform, attach_to=self.vehicle)
         self.actor_list.append(self.camera_rgb)
 
         # setup depth camera
         camera_depth = bp_library.find('sensor.camera.depth')
         camera_depth.set_attribute('fov', '120')
+        camera_depth.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
+        camera_depth.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
         self.camera_depth = world.spawn_actor(camera_depth, camera_transform, attach_to=self.vehicle)
         self.actor_list.append(self.camera_depth)
 
         # setup segmentation camera
         camera_segmentation = bp_library.find('sensor.camera.semantic_segmentation')
         camera_segmentation.set_attribute('fov', '120')
+        camera_segmentation.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
+        camera_segmentation.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
         self.camera_segmentation = world.spawn_actor(camera_segmentation, camera_transform, attach_to=self.vehicle)
         self.actor_list.append(self.camera_segmentation)
 
@@ -198,7 +205,8 @@ class CarlaEnv(gym.Env):
         if ENV_CONFIG["encode"]:   # stack gray depth segmentation
             obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
                                   self._image_depth[-1][:, :, np.newaxis],
-                                  self._image_segmentation[-1][:, :, np.newaxis]*21], axis=2)
+                                  self._image_segmentation[-1][:, :, np.newaxis]*21,
+                                  np.zeros([ENV_CONFIG['x_res'], ENV_CONFIG['y_res'], 1])], axis=2)
         else:
             obs = self._image_rgb[-1]
         return obs
@@ -273,9 +281,9 @@ class CarlaEnv(gym.Env):
             reward -= 100 * int(len(self._history_collision) > 0)
             new_invasion = list(set(info["lane_invasion"]) - set(prev_info["lane_invasion"]))
             if 'S' in new_invasion:     # go across solid lane
-                reward -= 20
+                reward -= 3
             elif 'B' in new_invasion:   # go across broken lane
-                reward -= 5
+                reward -= 2
             return reward
 
         done = False
@@ -326,7 +334,8 @@ class CarlaEnv(gym.Env):
         if ENV_CONFIG["encode"]:   # stack gray depth segmentation
             obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
                                   self._image_depth[-1][:, :, np.newaxis],
-                                  self._image_segmentation[-1][:, :, np.newaxis] * 21], axis=2)
+                                  self._image_segmentation[-1][:, :, np.newaxis] * 21,
+                                  self.encode_measurement(info)], axis=2)
         else:
             obs = self._image_rgb[-1]
 
@@ -335,7 +344,7 @@ class CarlaEnv(gym.Env):
     def render(self):
         import pygame
         display = pygame.display.set_mode(
-            (800, 600),
+            (ENV_CONFIG["x_res"], ENV_CONFIG["y_res"]),
             pygame.HWSURFACE | pygame.DOUBLEBUF)
         surface = pygame.surfarray.make_surface(env._image_rgb[-1].swapaxes(0, 1))
         display.blit(surface, (0, 0))
@@ -353,6 +362,17 @@ class CarlaEnv(gym.Env):
         elif yaw > 120 or yaw < -90:
             command = "turn_left"
         return self.command[command]
+
+    @staticmethod
+    def encode_measurement(py_measurements):
+        feature_map = np.zeros([4, 4])
+        feature_map[0, :] = (py_measurements["command"]) * 60
+        feature_map[1, :] = (py_measurements["speed"]) * 4
+        feature_map[2, :] = (py_measurements["command"]) * 60
+        feature_map[3, :] = (py_measurements["acceleration"]) * 20
+        stack = int(ENV_CONFIG["x_res"]/4)
+        feature_map = np.tile(feature_map, (stack, stack))
+        return feature_map[:, :, np.newaxis]
 
 
 if __name__ == '__main__':
