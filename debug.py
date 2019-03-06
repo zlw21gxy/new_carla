@@ -121,9 +121,6 @@ class CarlaEnv(gym.Env):
             if connect_fail_times > 10:
                 break
 
-    def restart(self):
-        """restart world and add sensors"""
-        world = self.world
         # destroy actors in the world before we start new episode
         for a in self.world.get_actors().filter('vehicle.*'):
             try:
@@ -135,6 +132,11 @@ class CarlaEnv(gym.Env):
                 a.destroy()
             except:
                 pass
+
+    def restart(self):
+        """restart world and add sensors"""
+        world = self.world
+
         bp_library = world.get_blueprint_library()
 
         # setup vehicle
