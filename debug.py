@@ -27,12 +27,12 @@ ENV_CONFIG = {
     "enable_planner": True,
     "early_terminate_on_collision": True,
     "reward_function": "custom",
-    "render_x_res": 800,
-    "render_y_res": 600,
-    "x_res": 800,
-    "y_res": 800,
+    "x_res": 96,
+    "y_res": 96,
     "discrete_actions": True,
+    "encode": True,
 }
+
 
 class CarlaEnv(gym.Env):
     def __init__(self, config=ENV_CONFIG):
@@ -94,26 +94,35 @@ class CarlaEnv(gym.Env):
         self.collision_sensor = None
         self.camera_rgb = None
         self.invasion_sensor = None
+        self.camera_segmentation = None
+        self.camera_depth = None
         # states and data
         self._history_info = []       # info history
         self._history_collision = []  # collision history
         self._history_invasion = []   # invasion history
         self._image_depth = []        # save a list of depth image
         self._image_rgb = []          # save a list of rgb image
-        self.image = []
-        # server
+        self._image_segmentation = []
+        self._image_gray = []
+        # initialize our world
         self.server_port = 2000
-        try:
-            self.client = carla.Client("localhost", self.server_port)
-            self.client.set_timeout(2.0)
-        except Exception as e:
-            print("fail to connect simulator", e)
-            self.client = carla.Client("localhost", self.server_port)
-            self.client.set_timeout(10.0)
-        self.world = self.client.get_world()
-        self.map = self.world.get_map()
+        self.world = None
+        connect_fail_times = 0
+        while self.world is None:
+            try:
+                self.client = carla.Client("localhost", self.server_port)
+                self.client.set_timeout(2.0)
+                self.world = self.client.get_world()
+                self.map = self.world.get_map()
+            except Exception as e:
+                connect_fail_times += 1
+                print("Error connecting: {}, attempt {}".format(e, connect_fail_times))
+                time.sleep(2)
+            if connect_fail_times > 10:
+                break
 
     def restart(self):
+        """restart world and add sensors"""
         world = self.world
         # destroy actors in the world before we start new episode
         for a in self.world.get_actors().filter('vehicle.*'):
@@ -135,11 +144,24 @@ class CarlaEnv(gym.Env):
         self.vehicle = world.spawn_actor(bp_vehicle, spawn_point)
         self.actor_list.append(self.vehicle)
 
-        # setup camera
-        camera_transform = carla.Transform(carla.Location(x=0, z=2.4))
-        bp_rgb = bp_library.find('sensor.camera.rgb')
-        self.camera_rgb = world.spawn_actor(bp_rgb, camera_transform, attach_to=self.vehicle)
+        # setup rgb camera
+        camera_transform = carla.Transform(carla.Location(x=0.7, y=0, z=2))
+        camera_rgb = bp_library.find('sensor.camera.rgb')
+        camera_rgb.set_attribute('fov', '120')
+        self.camera_rgb = world.spawn_actor(camera_rgb, camera_transform, attach_to=self.vehicle)
         self.actor_list.append(self.camera_rgb)
+
+        # setup depth camera
+        camera_depth = bp_library.find('sensor.camera.depth')
+        camera_depth.set_attribute('fov', '120')
+        self.camera_depth = world.spawn_actor(camera_depth, camera_transform, attach_to=self.vehicle)
+        self.actor_list.append(self.camera_depth)
+
+        # setup segmentation camera
+        camera_segmentation = bp_library.find('sensor.camera.semantic_segmentation')
+        camera_segmentation.set_attribute('fov', '120')
+        self.camera_segmentation = world.spawn_actor(camera_segmentation, camera_transform, attach_to=self.vehicle)
+        self.actor_list.append(self.camera_segmentation)
 
         # add collision sensors
         bp = bp_library.find('sensor.other.collision')
@@ -151,7 +173,6 @@ class CarlaEnv(gym.Env):
         self.invasion_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
         self.actor_list.append(self.invasion_sensor)
 
-
     def reset(self):
         self.restart()
         weak_self = weakref.ref(self)
@@ -160,25 +181,64 @@ class CarlaEnv(gym.Env):
         # set collision sensor
         self.collision_sensor.listen(lambda event: self._parse_collision(weak_self, event))
         # set rgb camera sensor
-        self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image, carla.ColorConverter.Raw))
-        time.sleep(0.2)
-        return self._image_rgb[-1]
+        self.camera_rgb.listen(lambda image: self._parse_image(weak_self, image,
+                                                               carla.ColorConverter.Raw, 'rgb'))
+        # set depth camera sensor
+        self.camera_depth.listen(lambda image: self._parse_image(weak_self, image,
+                                                                 carla.ColorConverter.LogarithmicDepth, 'depth'))
+        # set segmentation camera sensor
+        self.camera_segmentation.listen(lambda image: self._parse_image(weak_self, image,
+                                                                        carla.ColorConverter.Raw, 'seg'))
+
+        while len(self._image_rgb) < 2:
+            print("resetting")
+            time.sleep(0.1)
+        if ENV_CONFIG["encode"]:   # stack gray depth segmentation
+            obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
+                                  self._image_depth[-1][:, :, np.newaxis],
+                                  self._image_segmentation[-1][:, :, np.newaxis]*21], axis=2)
+        else:
+            obs = self._image_rgb[-1]
+        return obs
 
     @staticmethod
-    def _parse_image(weak_self, image, cc):
+    def _parse_image(weak_self, image, cc, use):
+        """convert BGRA to RGB"""
         self = weak_self()
         if not self:
             return
-        image.convert(cc)
-        # image.save_to_disk('_out/%08d' % image.frame_number)
-        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-        array = np.reshape(array, (image.height, image.width, 4))
-        array = array[:, :, -2:-5:-1]
-        self._image_rgb.append(array)
-        # time.sleep(1)
-        self.image.append(image)
-        if len(self.image) > 16:
-            self.image.pop(0)
+
+        def convert(cc):
+            image.convert(cc)
+            # image.save_to_disk('_out/%08d' % image.frame_number)
+            array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+            array = np.reshape(array, (image.height, image.width, 4))
+            array = array[:, :, -2:-5:-1]
+            return array
+
+        if use == 'rgb':
+            array = convert(cc)
+            self._image_rgb.append(array)
+            self._image_gray.append(0.45*array[:, :, 0] +
+                                    0.45*array[:, :, 1] +
+                                    0.1*array[:, :, 2])
+            if len(self._image_gray) > 16:
+                self._image_gray.pop(0)
+            if len(self._image_rgb) > 16:
+                self._image_rgb.pop(0)
+        if use == 'depth':
+            array = convert(cc)
+            # it is the same in each channel of depth image
+            self._image_depth.append(array[:, :, 0])
+            if len(self._image_depth) > 16:
+                self._image_depth.pop(0)
+        if use == 'seg':
+            array = convert(cc)
+            # segmentation information encode in red channel
+            self._image_segmentation.append(array[:, :, 0])
+            if len(self._image_segmentation) > 16:
+                self._image_segmentation.pop(0)
+
 
     @staticmethod
     def _parse_collision(weak_self, event):
@@ -231,7 +291,6 @@ class CarlaEnv(gym.Env):
         v = self.vehicle.get_velocity()
         c = self.vehicle.get_control()
         acceleration = self.vehicle.get_acceleration()
-        # TODO:add the state of traffic light and speed limit
         if len(self._history_invasion) > 0:
             invasion = self._history_invasion[-1]
         else:
@@ -262,7 +321,14 @@ class CarlaEnv(gym.Env):
         elif reward < -100:
             done = True
 
-        return self._image_rgb[-1], reward, done, self._history_info[-1]
+        if ENV_CONFIG["encode"]:   # stack gray depth segmentation
+            obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
+                                  self._image_depth[-1][:, :, np.newaxis],
+                                  self._image_segmentation[-1][:, :, np.newaxis] * 21], axis=2)
+        else:
+            obs = self._image_rgb[-1]
+
+        return obs, reward, done, self._history_info[-1]
 
     def render(self):
         import pygame
