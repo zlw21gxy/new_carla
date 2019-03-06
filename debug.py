@@ -263,7 +263,7 @@ class CarlaEnv(gym.Env):
         # S for Solid B for Broken
         self._history_invasion.append(text[0][1])
         if len(self._history_invasion) > 16:
-            self._history_collision.pop(0)
+            self._history_invasion.pop(0)
 
     def step(self, action):
 
@@ -361,12 +361,13 @@ if __name__ == '__main__':
     obs = env.reset()
     print(obs.shape)
     done = False
+    i = 0
     while not done:
         env.render()
         obs, reward, done, info = env.step(3)
         # print(len(env._image_rgb), obs.shape)
-        print(reward)
-
+        print(i, reward)
+        i += 1
     # for actor in env.actor_list:
     #     print(actor.id)
     #     actor.destroy()
