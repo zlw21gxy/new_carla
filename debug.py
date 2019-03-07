@@ -22,15 +22,17 @@ import numpy as np
 import gym
 from gym.spaces import Box, Discrete, Tuple
 # Default environment configuration
+
+""" default is rgb 
+    stack for gray depth segmentation stack together
+    encode for encode measurement in forth channel """
+
 ENV_CONFIG = {
-    "framestack": 1,
-    "enable_planner": True,
-    "early_terminate_on_collision": True,
-    "reward_function": "custom",
     "x_res": 96,
     "y_res": 96,
     "discrete_actions": True,
-    "encode": True,
+    "image_mode": "stack",
+
 }
 
 
@@ -64,19 +66,22 @@ class CarlaEnv(gym.Env):
             8: [-0.5, 0.5],
         }
 
-        if self.config["enable_planner"]:
-            pass
-
         if config["discrete_actions"]:
             self.action_space = Discrete(len(self.command))
         else:
             self.action_space = Box(-1.0, 1.0, shape=(2, ), dtype=np.float32)
 
+        if ENV_CONFIG["image_mode"] == "encode":
+            framestack = 4
+        elif ENV_CONFIG["image_mode"] == "stack":
+            framestack = 3
+        else:
+            framestack = 3
+
         image_space = Box(
             0,
             255,
-            shape=(config["y_res"], config["x_res"],
-                   3 * config["framestack"]),
+            shape=(config["y_res"], config["x_res"], framestack),
             dtype=np.uint8)
         self.observation_space = image_space
         # environment config
@@ -122,6 +127,11 @@ class CarlaEnv(gym.Env):
             if connect_fail_times > 10:
                 break
 
+
+
+    def restart(self):
+        """restart world and add sensors"""
+        world = self.world
         # destroy actors in the world before we start new episode
         for a in self.world.get_actors().filter('vehicle.*'):
             try:
@@ -133,54 +143,59 @@ class CarlaEnv(gym.Env):
                 a.destroy()
             except:
                 pass
+        fail_time = 0
+        while None in self.actor_list or len(self.actor_list) < 5:
+            try:
+                bp_library = world.get_blueprint_library()
 
-    def restart(self):
-        """restart world and add sensors"""
-        world = self.world
+                # setup vehicle
+                spawn_point = random.choice(world.get_map().get_spawn_points())
+                bp_vehicle = bp_library.find('vehicle.lincoln.mkz2017')
+                bp_vehicle.set_attribute('role_name', 'hero')
+                self.vehicle = world.try_spawn_actor(bp_vehicle, spawn_point)
+                self.actor_list.append(self.vehicle)
 
-        bp_library = world.get_blueprint_library()
+                # setup rgb camera
+                camera_transform = carla.Transform(carla.Location(x=1, y=0, z=2))
+                camera_rgb = bp_library.find('sensor.camera.rgb')
+                camera_rgb.set_attribute('fov', '120')
+                camera_rgb.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
+                camera_rgb.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
+                self.camera_rgb = world.try_spawn_actor(camera_rgb, camera_transform, attach_to=self.vehicle)
+                self.actor_list.append(self.camera_rgb)
 
-        # setup vehicle
-        spawn_point = random.choice(world.get_map().get_spawn_points())
-        bp_vehicle = bp_library.find('vehicle.lincoln.mkz2017')
-        bp_vehicle.set_attribute('role_name', 'hero')
-        self.vehicle = world.spawn_actor(bp_vehicle, spawn_point)
-        self.actor_list.append(self.vehicle)
+                # setup depth camera
+                camera_depth = bp_library.find('sensor.camera.depth')
+                camera_depth.set_attribute('fov', '120')
+                camera_depth.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
+                camera_depth.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
+                self.camera_depth = world.try_spawn_actor(camera_depth, camera_transform, attach_to=self.vehicle)
+                self.actor_list.append(self.camera_depth)
 
-        # setup rgb camera
-        camera_transform = carla.Transform(carla.Location(x=1, y=0, z=2))
-        camera_rgb = bp_library.find('sensor.camera.rgb')
-        camera_rgb.set_attribute('fov', '120')
-        camera_rgb.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
-        camera_rgb.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
-        self.camera_rgb = world.spawn_actor(camera_rgb, camera_transform, attach_to=self.vehicle)
-        self.actor_list.append(self.camera_rgb)
+                # setup segmentation camera
+                camera_segmentation = bp_library.find('sensor.camera.semantic_segmentation')
+                camera_segmentation.set_attribute('fov', '120')
+                camera_segmentation.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
+                camera_segmentation.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
+                self.camera_segmentation = world.try_spawn_actor(camera_segmentation, camera_transform, attach_to=self.vehicle)
+                self.actor_list.append(self.camera_segmentation)
 
-        # setup depth camera
-        camera_depth = bp_library.find('sensor.camera.depth')
-        camera_depth.set_attribute('fov', '120')
-        camera_depth.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
-        camera_depth.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
-        self.camera_depth = world.spawn_actor(camera_depth, camera_transform, attach_to=self.vehicle)
-        self.actor_list.append(self.camera_depth)
+                # add collision sensors
+                bp = bp_library.find('sensor.other.collision')
+                self.collision_sensor = world.try_spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
+                self.actor_list.append(self.collision_sensor)
 
-        # setup segmentation camera
-        camera_segmentation = bp_library.find('sensor.camera.semantic_segmentation')
-        camera_segmentation.set_attribute('fov', '120')
-        camera_segmentation.set_attribute('image_size_x', str(ENV_CONFIG["x_res"]))
-        camera_segmentation.set_attribute('image_size_y', str(ENV_CONFIG["y_res"]))
-        self.camera_segmentation = world.spawn_actor(camera_segmentation, camera_transform, attach_to=self.vehicle)
-        self.actor_list.append(self.camera_segmentation)
+                # add invasion sensors
+                bp = bp_library.find('sensor.other.lane_detector')
+                self.invasion_sensor = world.try_spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
+                self.actor_list.append(self.invasion_sensor)
+            except:
+                fail_time += 1
+                time.sleep(0.1)
 
-        # add collision sensors
-        bp = bp_library.find('sensor.other.collision')
-        self.collision_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
-        self.actor_list.append(self.collision_sensor)
-
-        # add invasion sensors
-        bp = bp_library.find('sensor.other.lane_detector')
-        self.invasion_sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self.vehicle)
-        self.actor_list.append(self.invasion_sensor)
+            if fail_time > 20:
+                print("spawn actor fail, so sad!!!")
+                break
 
     def reset(self):
         self.restart()
@@ -199,14 +214,18 @@ class CarlaEnv(gym.Env):
         self.camera_segmentation.listen(lambda image: self._parse_image(weak_self, image,
                                                                         carla.ColorConverter.Raw, 'seg'))
 
-        while len(self._image_rgb) < 2:
+        while len(self._image_rgb) < 4:
             print("resetting")
-            time.sleep(0.1)
-        if ENV_CONFIG["encode"]:   # stack gray depth segmentation
+            time.sleep(0.01)
+        if ENV_CONFIG["image_mode"] == "encode":   # stack gray depth segmentation
             obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
                                   self._image_depth[-1][:, :, np.newaxis],
                                   self._image_segmentation[-1][:, :, np.newaxis]*21,
                                   np.zeros([ENV_CONFIG['x_res'], ENV_CONFIG['y_res'], 1])], axis=2)
+        elif ENV_CONFIG["image_mode"] == "stack":
+            obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
+                                  self._image_depth[-1][:, :, np.newaxis],
+                                  self._image_segmentation[-1][:, :, np.newaxis] * 21], axis=2)
         else:
             obs = self._image_rgb[-1]
         return obs
@@ -331,11 +350,15 @@ class CarlaEnv(gym.Env):
         elif reward < -100:
             done = True
 
-        if ENV_CONFIG["encode"]:   # stack gray depth segmentation
+        if ENV_CONFIG["image_mode"] == "encode":   # stack gray depth segmentation
             obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
                                   self._image_depth[-1][:, :, np.newaxis],
-                                  self._image_segmentation[-1][:, :, np.newaxis] * 21,
-                                  self.encode_measurement(info)], axis=2)
+                                  self._image_segmentation[-1][:, :, np.newaxis]*21,
+                                  np.zeros([ENV_CONFIG['x_res'], ENV_CONFIG['y_res'], 1])], axis=2)
+        elif ENV_CONFIG["image_mode"] == "stack":
+            obs = np.concatenate([self._image_gray[-1][:, :, np.newaxis],
+                                  self._image_depth[-1][:, :, np.newaxis],
+                                  self._image_segmentation[-1][:, :, np.newaxis] * 21], axis=2)
         else:
             obs = self._image_rgb[-1]
 
